@@ -11,10 +11,8 @@ var { buildSchema } = require('graphql');
 
 
 // You can generate a Token from the "Tokens Tab" in the UI
-const token = 'tokenrandon=='
+const token = 'nTKWNA1G_enI_JVPsUKs_s2d1tQ3zIi5CbfIzVExjCE93W_xf67gtXNZsTsKzMgJIc8bGvWd6lI6opP40aTw7Q=='
 const org = 'tenant1'
-const influxClient = new InfluxDB({ url: 'http://localhost:8086', token: token })
-
 
 // 1
 const typeDefs = `
@@ -74,14 +72,14 @@ const fluxFilter = (devices, attributes) => {
   }).join(' or ');
 
   const strAttrs = attributes.map((attr) => {
-    return `r._field == "${attr.label}"`
+    return `r._field == "dojot.${attr.label}"`
   }).join(' or ');
 
   let rtnString = `filter(fn: (r) => `;
   rtnString += `(${strDevices})`
   if (attributes.length)
     rtnString += ` and (${strAttrs})`
-  rtnString += `))`
+  rtnString += `)`
   return rtnString;
 }
 
@@ -94,7 +92,7 @@ const fluxRange = (start, stop) => {
 }
 
 const fluxLimit = (limit) => {
-  return `limit(${limit})`
+  return `limit(n:${limit})`
 }
 
 const fluxYield = () => {
@@ -131,12 +129,11 @@ const root = {
       }
     } = root;
 
-    const fluxQuery = flux`from(bucket:"devices")
+    const fluxQuery = `from(bucket:"devices")
       |> ${fluxRange(start, stop)}
       |> ${fluxFilter(devices, attributes)}
       |> ${fluxLimit(limit)}
       |> ${fluxYield()}
-
       `;
     console.log("fluxQuery", fluxQuery.toString());
 
@@ -146,9 +143,43 @@ const root = {
     })
     const queryApi = influxClient.getQueryApi({ org, gzip: false });
 
-    // do query
-    const rtn = await queryApi.queryRows(fluxQuery);
-    console.log("rtn ", rtn);
+
+    //    return new Promise((resolve, reject) => {
+    const result = [];
+    queryApi.queryRows(fluxQuery, {
+      next(row, tableMeta) {
+        const o = tableMeta.toObject(row);
+        console.log(`queryByMeasurement: queryRows.next=${JSON.stringify(o, null, 2)}`);
+        const point = {
+          ts: o._time,
+          attrs: [],
+        };
+
+        const prefix = 'dojot.';
+        const prefixSize = 6;
+        delete o._time;
+        Object.entries(o).forEach(([key, value]) => {
+          // check if has 'dojot.' at begin
+          // https://measurethat.net/Benchmarks/Show/5016/1/replace-vs-substring-vs-slice-from-beginning-brackets-s
+          if (value !== null
+            // strings that don't exist for that point are empty
+            && value !== '') {
+            point.attrs.push({
+              label: key.slice(prefixSize),
+              value: value,
+            });
+          }
+        });
+        result.push(point);
+      },
+      error(error) {
+        return console.log(error);
+      },
+      complete() {
+        console.log(`queryByMeasurement: result=${JSON.stringify(result, null, 2)} totalItems=${result.length}`);
+        return resolve({ result, totalItems: result.length });
+      },
+    });
 
     closeInfluxConnection(queryApi);
 
@@ -167,3 +198,19 @@ app.use('/graphql', graphqlHTTP({
 app.listen(4000);
 
 console.log('Running a GraphQL API server at http://localhost:4000/graphql');
+
+
+/*
+
+  query {
+    getDeviceHistory (filter:{
+      devices:[{id:"1234"}],
+      attributes:[{label:"array"}],
+      limit:5,
+      range:{
+        start:"-1h"
+      }
+    })
+  }
+
+  */
